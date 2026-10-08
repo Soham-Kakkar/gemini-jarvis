@@ -32,6 +32,8 @@ export class GeminiClient {
 
   private assistantText = "";
 
+  private promptQueue: Promise<void> = Promise.resolve();
+
   constructor(options: GeminiClientOptions) {
     this.cwd = options.cwd;
     this.command = options.command ?? "gemini";
@@ -200,42 +202,45 @@ export class GeminiClient {
   }
 
   async prompt(text: string): Promise<GeminiPromptResult> {
-    const connection = this.connection;
+    const run = this.promptQueue.then(async () => {
+      const connection = this.connection;
 
-    if (!connection) {
-      throw new Error("Gemini client is not started");
-    }
+      if (!connection) {
+        throw new Error("Gemini client is not started");
+      }
 
-    if (!this.sessionId) {
-      throw new Error("Gemini session has not been created");
-    }
+      if (!this.sessionId) {
+        throw new Error("Gemini session has not been created");
+      }
 
-    this.assistantText = "";
+      this.assistantText = "";
 
-    const start = performance.now();
+      const response = await connection.agent.request(
+        acp.methods.agent.session.prompt,
+        {
+          sessionId: this.sessionId,
+          prompt: [
+            {
+              type: "text",
+              text,
+            },
+          ],
+        },
+      );
 
-    const response = await connection.agent.request(
-      acp.methods.agent.session.prompt,
-      {
-        sessionId: this.sessionId,
-        prompt: [
-          {
-            type: "text",
-            text,
-          },
-        ],
-      },
+      return {
+        response,
+        text: this.assistantText,
+      };
+    });
+
+    // If this prompt fails, don't permanently poison the queue.
+    this.promptQueue = run.then(
+      () => undefined,
+      () => undefined,
     );
 
-    console.log(
-      `ACP prompt completed in ` +
-      `${((performance.now() - start) / 1000).toFixed(2)}s`,
-    );
-
-    return {
-      response,
-      text: this.assistantText,
-    };
+    return run;
   }
 
   async stop(): Promise<void> {

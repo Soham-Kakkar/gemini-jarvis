@@ -1,29 +1,19 @@
-import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import * as acp from "@agentclientprotocol/sdk";
-
-export type SessionUpdateHandler = (
-  update: acp.SessionUpdate,
-) => void | Promise<void>;
-
-export type PermissionHandler = (
-  request: acp.RequestPermissionRequest,
-) => Promise<acp.RequestPermissionResponse>;
-
-export interface GeminiClientOptions {
-  cwd: string;
-  command?: string;
-}
-
-export interface GeminiPromptResult {
-  response: acp.PromptResponse;
-  text: string;
-}
+import { createGeminiConnection } from "./connection.js";
+import { spawnGeminiTransport } from "./transport.js";
+import type {
+  GeminiClientOptions,
+  GeminiPromptResult,
+  PermissionHandler,
+  SessionUpdateHandler,
+} from "./types.js";
 
 export class GeminiClient {
   private readonly cwd: string;
   private readonly command: string;
 
-  private process: ReturnType<typeof spawn> | null = null;
+  private process: ChildProcess | null = null;
   private connection: acp.ClientConnection | null = null;
   private sessionId: string | null = null;
 
@@ -52,16 +42,12 @@ export class GeminiClient {
       throw new Error("Gemini client is already running");
     }
 
-    const child = spawn(this.command, ["--acp"], {
-      cwd: this.cwd,
-      stdio: ["pipe", "pipe", "inherit"],
-    });
+    const transport = spawnGeminiTransport(this.command, this.cwd);
+    const child = transport.child;
 
     this.process = child;
 
-    child.on("error", (error) => {
-      console.error("Gemini process error:", error);
-    });
+    child.on("error", (error) => { console.error("Gemini process error:", error); });
 
     child.on("exit", (code, signal) => {
       console.log(`Gemini exited: code=${code}, signal=${signal}`);
@@ -71,101 +57,14 @@ export class GeminiClient {
       this.sessionId = null;
     });
 
-    const stdin = child.stdin;
-    const stdout = child.stdout;
-
-    const input = new ReadableStream<Uint8Array>({
-      start(controller) {
-        stdout.on("data", (chunk: Buffer) => {
-          controller.enqueue(new Uint8Array(chunk));
-        });
-
-        stdout.on("end", () => {
-          controller.close();
-        });
-
-        stdout.on("error", (error) => {
-          controller.error(error);
-        });
+    const connection = createGeminiConnection(
+      transport.stream,
+      {
+        onPermissionRequest: this.permissionHandler,
+        onUpdate: this.updateHandler,
+        onAssistantText: (text) => {this.assistantText += text;},
       },
-
-      cancel() {
-        stdout.destroy();
-      },
-    });
-
-    const output = new WritableStream<Uint8Array>({
-      write(chunk) {
-        return new Promise<void>((resolve, reject) => {
-          if (stdin.destroyed) {
-            reject(new Error("Gemini stdin is closed"));
-            return;
-          }
-
-          stdin.write(Buffer.from(chunk), (error) => {
-            if (error) {
-              reject(error);
-            } else {
-              resolve();
-            }
-          });
-        });
-      },
-
-      close() {
-        if (!stdin.destroyed) {
-          stdin.end();
-        }
-      },
-
-      abort(reason) {
-        stdin.destroy(
-          reason instanceof Error ? reason : undefined,
-        );
-      },
-    });
-
-    const stream = acp.ndJsonStream(output, input);
-
-    const client = acp
-      .client({
-        name: "gemini-jarvis",
-      })
-      .onRequest(
-        acp.methods.client.session.requestPermission,
-        async (ctx) => {
-          if (!this.permissionHandler) {
-            return {
-              outcome: {
-                outcome: "cancelled",
-              },
-            };
-          }
-
-          return this.permissionHandler(ctx.params);
-        },
-      )
-      .onNotification(
-        acp.methods.client.session.update,
-        async (ctx) => {
-          const update = ctx.params.update;
-
-          if (
-            update.sessionUpdate === "agent_message_chunk" &&
-            update.content.type === "text"
-          ) {
-            this.assistantText += update.content.text;
-          }
-
-          if (this.updateHandler) {
-            await this.updateHandler(update);
-          }
-        },
-      );
-
-    // IMPORTANT:
-    // connect(), unlike connectWith(), keeps the ACP connection alive.
-    const connection = client.connect(stream);
+    );
 
     this.connection = connection;
 
@@ -228,18 +127,11 @@ export class GeminiClient {
         },
       );
 
-      return {
-        response,
-        text: this.assistantText,
-      };
+      return { response, text: this.assistantText };
     });
 
     // If this prompt fails, don't permanently poison the queue.
-    this.promptQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-
+    this.promptQueue = run.then(() => undefined, () => undefined);
     return run;
   }
 
@@ -253,20 +145,12 @@ export class GeminiClient {
 
     if (connection) {
       console.log("Closing ACP connection...");
-
       connection.close();
-
       // Wait for the ACP connection to actually close.
       await connection.closed.catch(() => { });
     }
 
-    if (!child) {
-      return;
-    }
-
-    if (child.exitCode !== null || child.signalCode !== null) {
-      return;
-    }
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
 
     console.log("Waiting for Gemini process to exit...");
 
@@ -284,16 +168,13 @@ export class GeminiClient {
     });
 
     if (!exited && child.exitCode === null && child.signalCode === null) {
-      console.log("Gemini did not exit; terminating process.");
 
+      console.log("Gemini did not exit; terminating process.");
       child.kill("SIGTERM");
 
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) {
-            child.kill("SIGKILL");
-          }
-
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
           resolve();
         }, 2000);
 
@@ -305,11 +186,6 @@ export class GeminiClient {
     }
   }
 
-  getSessionId(): string | null {
-    return this.sessionId;
-  }
-
-  get running(): boolean {
-    return this.process !== null;
-  }
+  getSessionId(): string | null { return this.sessionId; }
+  get running(): boolean { return this.process !== null; }
 }

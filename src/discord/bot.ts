@@ -1,10 +1,5 @@
 import "dotenv/config";
-import {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  type Message,
-} from "discord.js";
+import { Client, GatewayIntentBits, Partials, type Message } from "discord.js";
 
 export interface DiscordBotOptions {
   token: string;
@@ -27,12 +22,8 @@ export class DiscordBot {
     this.ownerId = options.ownerId;
 
     this.client = new Client({
-      intents: [
-        GatewayIntentBits.DirectMessages,
-      ],
-      partials: [
-        Partials.Channel,
-      ],
+      intents: [GatewayIntentBits.DirectMessages],
+      partials: [Partials.Channel],
     });
 
     this.client.once("clientReady", (client) => {
@@ -42,21 +33,12 @@ export class DiscordBot {
     });
 
     this.client.on("messageCreate", async (message) => {
-      if (message.author.bot) {
-        return;
-      }
+      if (message.author.bot || 
+          message.author.id !== this.ownerId ||
+          !message.channel.isDMBased()
+        ) return;
 
-      if (message.author.id !== this.ownerId) {
-        return;
-      }
-
-      if (!message.channel.isDMBased()) {
-        return;
-      }
-
-      if (this.messageHandler) {
-        await this.messageHandler(message);
-      }
+      if (this.messageHandler) await this.messageHandler(message);
     });
   }
 

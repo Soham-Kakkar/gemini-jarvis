@@ -21,6 +21,7 @@ export class GeminiClient {
   private permissionHandler: PermissionHandler | null = null;
 
   private assistantText = "";
+  private assistantTextHandler: ((text: string) => void) | null = null;
 
   private promptQueue: Promise<void> = Promise.resolve();
 
@@ -62,7 +63,10 @@ export class GeminiClient {
       {
         onPermissionRequest: this.permissionHandler,
         onUpdate: this.updateHandler,
-        onAssistantText: (text) => {this.assistantText += text;},
+        onAssistantText: (text) => {
+          this.assistantText += text;
+          this.assistantTextHandler?.(text);
+        },
       },
     );
 
@@ -100,34 +104,29 @@ export class GeminiClient {
     }
   }
 
-  async prompt(text: string): Promise<GeminiPromptResult> {
+  async prompt(text: string, onChunk?: (text: string) => void): Promise<GeminiPromptResult> {
     const run = this.promptQueue.then(async () => {
       const connection = this.connection;
 
-      if (!connection) {
-        throw new Error("Gemini client is not started");
-      }
-
-      if (!this.sessionId) {
-        throw new Error("Gemini session has not been created");
-      }
+      if (!connection) throw new Error("Gemini client is not started");
+      if (!this.sessionId) throw new Error("Gemini session has not been created");
 
       this.assistantText = "";
+      this.assistantTextHandler = onChunk ?? null;
 
-      const response = await connection.agent.request(
-        acp.methods.agent.session.prompt,
-        {
-          sessionId: this.sessionId,
-          prompt: [
-            {
-              type: "text",
-              text,
-            },
-          ],
-        },
-      );
+      try {
+        const response = await connection.agent.request(
+          acp.methods.agent.session.prompt,
+          {
+            sessionId: this.sessionId,
+            prompt: [{ type: "text", text }],
+          },
+        );
 
-      return { response, text: this.assistantText };
+        return { response, text: this.assistantText };
+      } finally {
+        this.assistantTextHandler = null;
+      }
     });
 
     // If this prompt fails, don't permanently poison the queue.

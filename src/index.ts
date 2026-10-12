@@ -1,5 +1,5 @@
 import "dotenv/config";
-
+import os from "node:os";
 import { DiscordBot } from "./discord/bot.js";
 import { DiscordStreamer } from "./discord/streamer.js";
 import { GeminiClient } from "./gemini/client.js";
@@ -16,7 +16,7 @@ if (!discordOwnerId) {
 }
 
 const gemini = new GeminiClient({
-  cwd: process.cwd(),
+  cwd: os.homedir(),
 });
 
 const discord = new DiscordBot({

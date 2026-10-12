@@ -8,11 +8,10 @@ export interface GeminiTransport {
   stream: GeminiTransportStream;
 }
 
-export function spawnGeminiTransport(command: string, cwd: string, ): GeminiTransport {
+export function spawnGeminiTransport(command: string, cwd: string,): GeminiTransport {
   const child = spawn(command, [
-    "--acp ",
-    `--api-key ${process.env.GEMINI_API_KEY!}`,
-    `--include-directories ${process.env.INCLUDE_DIRECTORIES || "."}`
+    "--acp",
+    "--include-directories", process.env.INCLUDE_DIRECTORIES || "."
   ], {
     cwd,
     stdio: ["pipe", "pipe", "inherit"],

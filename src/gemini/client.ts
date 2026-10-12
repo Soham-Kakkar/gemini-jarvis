@@ -46,8 +46,10 @@ export class GeminiClient {
     const transport = spawnGeminiTransport(this.command, this.cwd);
     const child = transport.child;
 
-    this.process = child;
+    console.log(`Gemini client spawned with PID: ${child.pid}`);
 
+    this.process = child;
+    
     child.on("error", (error) => { console.error("Gemini process error:", error); });
 
     child.on("exit", (code, signal) => {
@@ -69,6 +71,7 @@ export class GeminiClient {
         },
       },
     );
+    console.log("ACP connection established with Gemini.");
 
     this.connection = connection;
 
@@ -132,6 +135,16 @@ export class GeminiClient {
     // If this prompt fails, don't permanently poison the queue.
     this.promptQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  async cancel(): Promise<void> {
+    if (!this.connection || !this.sessionId) {
+      throw new Error("Gemini session is not available");
+    }
+    await this.connection.agent.notify(
+      acp.methods.agent.session.cancel,
+      { sessionId: this.sessionId },
+    );
   }
 
   async stop(): Promise<void> {

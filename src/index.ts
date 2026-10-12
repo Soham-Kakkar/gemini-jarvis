@@ -1,8 +1,9 @@
 import "dotenv/config";
 import os from "node:os";
 import { DiscordBot } from "./discord/bot.js";
-import { DiscordStreamer } from "./discord/streamer.js";
+import { PermissionRelayer } from "./discord/permissions.js";
 import { GeminiClient } from "./gemini/client.js";
+import { TaskManager } from "./tasks/manager.js";
 
 const discordToken = process.env.DISCORD_TOKEN;
 const discordOwnerId = process.env.DISCORD_OWNER_ID;
@@ -24,34 +25,28 @@ const discord = new DiscordBot({
   ownerId: discordOwnerId,
 });
 
+const permissions = new PermissionRelayer(discord.getClient(), discordOwnerId);
+
+gemini.onPermissionRequest((params) => permissions.request(params));
+
+const tasks = new TaskManager(gemini);
+
 discord.onMessage(async (message) => {
-  console.log(`DM: ${message.content}`);
+  const content = message.content.trim();
+  if (!content && message.attachments.size === 0) return;
+  await tasks.enqueue(content, message);
+});
 
-  const start = performance.now();
-
-  try {
-    const reply = await message.reply("Thinking...");
-    const streamer = new DiscordStreamer(reply);
-
-    const result = await gemini.prompt(message.content, (chunk) => streamer.push(chunk));
-
-    await streamer.finish();
-    const elapsed = performance.now() - start;
-
-    console.log(`Gemini finished: ${result.response.stopReason} in ${(elapsed / 1000).toFixed(2)}s`);
-    console.log(`Total Discord round trip: ${((performance.now() - start) / 1000).toFixed(2)}s`);
-  } catch (error) {
-    console.error("Gemini error:", error);
-
-    await message.reply("Something went wrong while talking to Gemini.");
-  }
+discord.onButton(async (interaction) => {
+  if (await permissions.handleButton(interaction)) return;
+  await tasks.handleButton(interaction);
 });
 
 try {
   await gemini.start();
   await discord.start();
-
   console.log("Jarvis is ready.");
+
 } catch (error) {
   console.error("Startup failed:", error);
 
